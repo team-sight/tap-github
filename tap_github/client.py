@@ -57,9 +57,6 @@ class GitHubRestStream(RESTStream):
     replication_key: str | None = None
     tolerated_http_errors: ClassVar[list[int]] = []
 
-    # Save the context from the requests so it can be available to the parse_response method
-    context: dict | None = None
-
     @property
     def http_headers(self) -> dict[str, str]:
         """Return the http headers needed."""
@@ -145,9 +142,6 @@ class GitHubRestStream(RESTStream):
         context: dict | None,
         next_page_token: Any | None,  # noqa: ANN401
     ) -> dict[str, Any]:
-        # save the context from the requests so it can be available to the parse_response method
-        self.context = context
-
         """Return a dictionary of values to be used in URL parameterization."""
         params: dict = {"per_page": self.MAX_PER_PAGE}
         if next_page_token:
@@ -288,7 +282,29 @@ class GitHubRestStream(RESTStream):
         else:
             filtered_results = results
 
+        # Replace NUL values
+        for item in filtered_results:
+            self.replace_nul_values(item)
+
         yield from filtered_results
+
+    # Sadly, the GitHub API returns NUL values in some fields.
+    # This function recursively replaces them with empty strings.
+    # Otherwise postgres will raise an error when inserting the data.
+    def replace_nul_values(self, obj):
+        """Recursively replace NUL values in strings within dictionaries and lists."""
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, str):
+                    obj[key] = value.replace("\x00", "")
+                elif isinstance(value, (dict, list)):
+                    self.replace_nul_values(value)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                if isinstance(item, str):
+                    obj[i] = item.replace("\x00", "")
+                elif isinstance(item, (dict, list)):
+                    self.replace_nul_values(item)
 
     def post_process(self, row: dict, context: dict[str, str] | None = None) -> dict:
         """Add `repo_id` by default to all streams."""
